@@ -11,6 +11,12 @@
 #   loop_uses_worktree   — optional, echo "true" if worktree needed (default: true)
 #   loop_no_work_label   — optional, echo label for "no work" messages (default: "tasks")
 
+# Optional telemetry: session/iteration/pick spans as contract JSONL,
+# enabled only when RALPH_OTEL_FILE is set. Pure no-op otherwise.
+_ralph_loop_lib_dir="${0:A:h}"
+[[ -z "$_ralph_loop_lib_dir" || ! -d "$_ralph_loop_lib_dir" ]] && _ralph_loop_lib_dir="$RALPH_HOME/lib"
+source "$_ralph_loop_lib_dir/ralph-telemetry.sh"
+
 ralph_claim_instance() {
   local agent_key="$1"
   local base_dir="/tmp/ralph-${agent_key}"
@@ -135,7 +141,11 @@ ralph_run_loop() {
     exit 1
   }
 
-  trap 'ralph_titlebar_cleanup; rm -f "$tmpfile" "$LOOP_WORK_FILE" 2>/dev/null; rm -rf "$instance_slot" 2>/dev/null; [[ "$uses_worktree" == "true" ]] && ralph_cleanup_worktree "$work_dir"; [[ -n "$stream_pgid" ]] && kill -9 -$stream_pgid 2>/dev/null || true; [[ -n "$stream_pid" ]] && kill -9 -$stream_pid 2>/dev/null || true; [[ -n "$child_pid" ]] && kill -9 -$child_pid 2>/dev/null || true' EXIT
+  trap 'ralph_telemetry_session_end $?; ralph_titlebar_cleanup; rm -f "$tmpfile" "$LOOP_WORK_FILE" 2>/dev/null; rm -rf "$instance_slot" 2>/dev/null; [[ "$uses_worktree" == "true" ]] && ralph_cleanup_worktree "$work_dir"; [[ -n "$stream_pgid" ]] && kill -9 -$stream_pgid 2>/dev/null || true; [[ -n "$stream_pid" ]] && kill -9 -$stream_pid 2>/dev/null || true; [[ -n "$child_pid" ]] && kill -9 -$child_pid 2>/dev/null || true' EXIT
+
+  # Telemetry session span (no-op unless RALPH_OTEL_FILE is set); the
+  # EXIT trap above closes it with the run's exit code on every path.
+  ralph_telemetry_session_start "$agent_key" "$instance_num"
 
   # ─── Early exit for bounded runs with no work (before titlebar clears screen)
   local has_prefetch=0
@@ -187,7 +197,12 @@ ralph_run_loop() {
     # Pick work item for this instance
     LOOP_TASK_KEY=""
     LOOP_TASK_DISPLAY=""
-    if ! loop_pick_work; then
+    ralph_telemetry_start_span "task_pick"
+    local _pick_rc=0
+    loop_pick_work || _pick_rc=$?
+    ralph_telemetry_set task_id "$LOOP_TASK_KEY"
+    ralph_telemetry_end_span "$_pick_rc"
+    if (( _pick_rc != 0 )); then
       if [[ "$max_iterations" -gt 0 ]]; then
         ralph_log "${agent_name} #$instance_num: No eligible $no_work_label for this instance. Nothing to do."
         exit 0
@@ -220,6 +235,8 @@ ralph_run_loop() {
 
     last_task_key="$LOOP_TASK_KEY"
     iteration=$((iteration + 1))
+    ralph_telemetry_start_span "iteration"
+    ralph_telemetry_set task_id "$LOOP_TASK_KEY"
     tmpfile=$(mktemp)
 
     # Per-iteration archive — streamed live during the iteration so a kill -9
@@ -345,6 +362,21 @@ PROMPT_EOF
     # (live tee may lag behind raw_output). On kill -9 mid-iteration we never
     # reach here, but the partial live archive already exists for postmortem.
     [[ -n "$iter_archive" && -s "$tmpfile" ]] && cp "$tmpfile" "$iter_archive"
+
+    # Telemetry: close the iteration span now that the outcome is known
+    # (no-op unless RALPH_OTEL_FILE is set). The verdict mirrors the
+    # promise protocol checked below: COMPLETE / ABORT / empty output /
+    # no promise (not_evaluated). Closing here covers every exit path
+    # that follows (abort, empty-abort, max-iterations, cooldown).
+    local _tel_exit=0 _tel_verdict="not_evaluated" _tel_status="UNSET"
+    if [[ ! -s "$tmpfile" ]]; then
+      _tel_exit=1; _tel_verdict="empty"; _tel_status="ERROR"
+    elif [[ "$result" == *"<promise>ABORT</promise>"* ]]; then
+      _tel_exit=1; _tel_verdict="abort"; _tel_status="ERROR"
+    elif [[ "$result" == *"<promise>COMPLETE</promise>"* ]]; then
+      _tel_verdict="complete"
+    fi
+    ralph_telemetry_end_span "$_tel_exit" "$_tel_verdict" "$_tel_status"
 
     # Detect empty iterations (Claude crashed or produced no output)
     if [[ ! -s "$tmpfile" ]]; then
