@@ -165,6 +165,20 @@ ralph debug implementer 2 --raw # Raw JSON from instance 2
 ralph status                    # Task counts + running instances overview
 ```
 
+### Telemetry (optional)
+
+Set `RALPH_OTEL_FILE` to a JSONL path to record OpenTelemetry-shaped
+span records for each loop run — one `session` span per run, with
+`task_pick`, `gate_check`, and `iteration` spans nested under it.
+Records follow the shared AEP telemetry contract (same shape as
+ghg's JSONL exporter): `name`, `trace_id`, `span_id`,
+`parent_span_id`, `start_time`/`end_time` (epoch ns), `status`, and
+allowlisted attributes only (`operation`, `actor`, `exit_code`,
+`duration_ms`, `gate_verdict`, `task_id`) — never argv, env values,
+or tokens. Unset (the default), telemetry is a pure no-op: no file
+is created and loop behaviour is unchanged. See
+`lib/ralph-telemetry.sh` and `tests/test-telemetry.sh`.
+
 ## Providers
 
 Ralph abstracts the backlog system. Set `RALPH_PROVIDER` to switch providers.

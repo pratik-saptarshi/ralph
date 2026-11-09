@@ -85,6 +85,7 @@ ralph_gated_loop() {
         if (( unblocked_seen == instance_num )); then
           LOOP_TASK_KEY=$(jq -r '.key' "$_task_file")
           LOOP_TASK_DISPLAY="Task: $LOOP_TASK_KEY"
+          ralph_telemetry_gate "pass" "$LOOP_TASK_KEY"
           return 0
         fi
       else
@@ -97,6 +98,7 @@ ralph_gated_loop() {
             LOOP_TASK_KEY=$(jq -r '.key' "$_task_file")
             ralph_log "Traversed blockers: $blocked_key → $LOOP_TASK_KEY"
             LOOP_TASK_DISPLAY="Task: $LOOP_TASK_KEY (unblocks $blocked_key)"
+            ralph_telemetry_gate "pass" "$LOOP_TASK_KEY"
             return 0
           fi
         else
@@ -107,6 +109,7 @@ ralph_gated_loop() {
       fi
       pick_idx=$((pick_idx + 1))
     done
+    ralph_telemetry_gate "blocked" ""
     return 1
   }
 
