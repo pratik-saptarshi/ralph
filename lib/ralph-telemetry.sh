@@ -52,11 +52,18 @@ typeset -ga _RALPH_TEL_STACK_OPS=()
 typeset -ga _RALPH_TEL_STACK_ATTRS=()
 
 # Resolve the writer + a python3 interpreter once, at source time.
+# This block must NEVER fail the sourcing shell: bin/ralph runs with
+# `set -e` and both loop entry points source this file, so a non-zero
+# status here would abort every loop at load time. A missing python3
+# is not an error — it simply leaves telemetry disabled (the `|| true`
+# below keeps the discovery substitution's status at 0, and
+# ralph_telemetry_session_start refuses to activate without an
+# interpreter). Python is not otherwise required by the loops.
 _ralph_tel_lib_dir="${0:A:h}"
 [[ -z "$_ralph_tel_lib_dir" || ! -d "$_ralph_tel_lib_dir" ]] && _ralph_tel_lib_dir="$RALPH_HOME/lib"
 typeset -g _RALPH_TEL_WRITER="$_ralph_tel_lib_dir/ralph-telemetry.py"
 typeset -g _RALPH_TEL_PYTHON=""
-_ralph_tel_python_candidate="$(command -v python3 2>/dev/null)"
+_ralph_tel_python_candidate="$(command -v python3 2>/dev/null || true)"
 [[ -n "$_ralph_tel_python_candidate" && -f "$_RALPH_TEL_WRITER" ]] && _RALPH_TEL_PYTHON="$_ralph_tel_python_candidate"
 
 # ─── Primitives ──────────────────────────────────────────────────────────────

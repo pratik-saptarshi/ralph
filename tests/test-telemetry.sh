@@ -9,6 +9,8 @@
 #                          non-allowlisted keys never reaches the file
 #   (d) unusable path    = no-op, exit codes preserved
 #   (e) EXIT-trap wiring = session span closed with the run's exit code
+#   (f) no python3       = loops still load under `set -e` (bin/ralph's
+#                          contract); telemetry silently disabled
 #
 # Usage: zsh tests/test-telemetry.sh
 #
@@ -247,6 +249,67 @@ loop_probe=$(
   fi
 )
 assert_eq "$loop_probe" "DEFINED" "telemetry functions defined via ralph-loop.sh"
+
+# ─── (f) No python3 on PATH: loops load under set -e, telemetry off ─────────
+#
+# Regression for the PR #1 Codex P1: interpreter discovery in
+# lib/ralph-telemetry.sh ran a bare `command -v python3` assignment at
+# source time. bin/ralph enables `set -e` and both loop entry points
+# source the helper (via ralph-loop.sh), so on a machine without
+# python3 every loop exited during loading — even with telemetry off.
+# Python was not previously required by these loops; a missing
+# interpreter must disable telemetry silently, never kill the caller.
+
+echo ""
+echo "=== No python3 on PATH (set -e load, the bin/ralph contract) ==="
+
+# Stub bin dir: every standard utility the loader path needs, minus
+# python3 (symlink all of /usr/bin and /bin except python*).
+_stub_bin="$_TEL_TMP/nopython-bin"
+mkdir -p "$_stub_bin"
+for _d in /usr/bin /bin; do
+  for _f in "$_d"/*; do
+    [[ "${_f:t}" == python* ]] && continue
+    [[ -e "$_stub_bin/${_f:t}" || -L "$_stub_bin/${_f:t}" ]] && continue
+    ln -s "$_f" "$_stub_bin/${_f:t}" 2>/dev/null
+  done
+done
+
+test_case "nopython: stub PATH really lacks python3 (test is not vacuous)"
+if ( PATH="$_stub_bin"; command -v python3 ) >/dev/null 2>&1; then
+  _fail=$((_fail + 1)); echo "  FAIL: stub PATH still resolves python3"
+else
+  _pass=$((_pass + 1)); echo "  PASS: stub PATH has no python3"
+fi
+
+# Driver replicating bin/ralph's load contract: `set -e`, source the
+# loop entry point (which sources the telemetry helper), exercise the
+# telemetry entry points, print a marker, exit with a sentinel code.
+_driver="$_TEL_TMP/driver-nopython.zsh"
+cat > "$_driver" <<'DRIVER_EOF'
+set -e
+source "$RALPH_HOME/lib/ralph-loop.sh"
+ralph_telemetry_session_start builder 1
+ralph_telemetry_gate "pass" "PROD-42"
+ralph_telemetry_session_end 7
+echo "LOOP-LOADED-AND-RAN"
+exit 7
+DRIVER_EOF
+_ZSH_BIN="$(command -v zsh)"
+
+test_case "nopython + telemetry OFF: loop loads, marker, exit preserved"
+_nopy_out=$( env -u RALPH_OTEL_FILE RALPH_HOME="$RALPH_HOME" PATH="$_stub_bin" "$_ZSH_BIN" "$_driver" 2>/dev/null )
+_nopy_rc=$?
+assert_eq "$_nopy_out" "LOOP-LOADED-AND-RAN" "nopython/off: loop survived loading under set -e"
+assert_eq "$_nopy_rc" "7" "nopython/off: exit code preserved (7)"
+
+test_case "nopython + telemetry ON: silently disabled, no file, exit preserved"
+_nopy_target="$_TEL_TMP/nopython.jsonl"
+_nopy_out2=$( env RALPH_OTEL_FILE="$_nopy_target" RALPH_HOME="$RALPH_HOME" PATH="$_stub_bin" "$_ZSH_BIN" "$_driver" 2>/dev/null )
+_nopy_rc2=$?
+assert_eq "$_nopy_out2" "LOOP-LOADED-AND-RAN" "nopython/on: loop survived loading under set -e"
+assert_eq "$_nopy_rc2" "7" "nopython/on: exit code preserved (7)"
+assert_file_absent "$_nopy_target"
 
 # ─── Cleanup & summary ───────────────────────────────────────────────────────
 
